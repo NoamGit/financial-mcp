@@ -58,6 +58,6 @@ export class TransactionHandler extends BaseHandler {
     // Add scrape status if running
     response = await this.addScrapeStatusIfRunning(response);
 
-    return this.formatResponse(response);
+    return this.formatResponse({ ...response, ...this.getFreshnessFooterSafe() });
   }
 }

@@ -5,20 +5,11 @@ import {
   BalanceHistoryResponse,
   DEFAULT_BALANCE_HISTORY_DAYS,
 } from '../types.js';
-import { logger } from '../utils/logger.js';
-
 export class AccountHandler extends BaseHandler {
   async getAccounts() {
     const accounts = await this.scraperService.getAccounts();
 
-    // If no accounts found, trigger an async scrape
-    if (accounts.length === 0) {
-      logger.info('No accounts found, triggering async scrape...');
-      await this.scraperService.startAsyncScrapeAll();
-
-      // Don't retry immediately since scraping is async
-      // The user will be notified that scraping is in progress
-    }
+    // Data refreshes happen via the external cron scraper — this server has no credentials.
 
     let response: AccountsResponse = {
       success: true,
@@ -28,7 +19,7 @@ export class AccountHandler extends BaseHandler {
     // Add scrape status if running
     response = await this.addScrapeStatusIfRunning(response);
 
-    return this.formatResponse(response);
+    return this.formatResponse({ ...response, ...this.getFreshnessFooterSafe() });
   }
 
   async getAccountBalanceHistory(args: BalanceHistoryArgs) {
@@ -50,6 +41,6 @@ export class AccountHandler extends BaseHandler {
     // Add scrape status if running
     response = await this.addScrapeStatusIfRunning(response);
 
-    return this.formatResponse(response);
+    return this.formatResponse({ ...response, ...this.getFreshnessFooterSafe() });
   }
 }

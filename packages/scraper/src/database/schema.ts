@@ -44,7 +44,15 @@ export function initializeDatabase(): Database.Database {
     fs.mkdirSync(dbDir, { recursive: true });
   }
 
-  const db = new Database(DB_PATH);
+  const db = new Database(DB_PATH, {
+    readonly: process.env.DB_READONLY === 'true',
+  });
+
+  // Disable WAL mode so no -wal/-shm sidecar files are written.
+  // This is required because the mcp-server mounts the data volume :ro;
+  // SQLite WAL mode would try to create sidecar files in the same directory,
+  // which fails with SQLITE_READONLY on a read-only mount.
+  db.pragma('journal_mode = DELETE');
 
   // Enable foreign keys
   db.pragma('foreign_keys = ON');
@@ -87,6 +95,7 @@ export function initializeDatabase(): Database.Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       started_at DATETIME NOT NULL,
       completed_at DATETIME,
+      provider TEXT,
       status TEXT NOT NULL,
       error_message TEXT,
       transactions_count INTEGER DEFAULT 0,
@@ -127,6 +136,17 @@ export function initializeDatabase(): Database.Database {
   if (!hasInstallmentTotal) {
     logger.info('Adding "installment_total" column to transactions table');
     db.exec(`ALTER TABLE transactions ADD COLUMN installment_total INTEGER`);
+  }
+
+  // Migrate scrape_runs to add provider column (per-provider tracking)
+  const scrapeRunsColumns: Array<{ name: string }> = db
+    .prepare(`PRAGMA table_info(scrape_runs)`)
+    .all() as Array<{ name: string }>;
+
+  const hasProviderColumn = scrapeRunsColumns.some(col => col.name === 'provider');
+  if (!hasProviderColumn) {
+    logger.info('Adding "provider" column to scrape_runs table');
+    db.exec(`ALTER TABLE scrape_runs ADD COLUMN provider TEXT`);
   }
 
   logger.info('Database initialized successfully');

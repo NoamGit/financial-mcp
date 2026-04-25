@@ -59,6 +59,12 @@ export const PROVIDER_CONFIG = {
     credentialFields: ['id', 'card6Digits', 'password'],
     envPrefix: 'ISRACARD',
   },
+  isracard2: {
+    companyType: CompanyTypes.isracard,
+    displayName: 'Isracard (2nd account)',
+    credentialFields: ['id', 'card6Digits', 'password'],
+    envPrefix: 'ISRACARD2',
+  },
   amex: {
     companyType: CompanyTypes.amex,
     displayName: 'American Express',
@@ -114,7 +120,7 @@ export const PROVIDER_CONFIG = {
     envPrefix: 'PAGI',
   },
 } as const satisfies Record<
-  CompanyTypes,
+  string,
   {
     companyType: CompanyTypes;
     displayName: string;

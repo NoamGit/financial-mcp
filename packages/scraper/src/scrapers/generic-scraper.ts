@@ -189,7 +189,7 @@ export class GenericScraper implements BaseScraper {
 
   private getAccountTypeForProvider(): string {
     // Credit card providers
-    const creditCardProviders = ['visaCal', 'max', 'isracard', 'amex'];
+    const creditCardProviders = ['visaCal', 'max', 'isracard', 'isracard2', 'amex'];
     return creditCardProviders.includes(this.type) ? 'Credit Card' : 'Bank';
   }
 }

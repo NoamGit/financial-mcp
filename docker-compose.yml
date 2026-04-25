@@ -2,12 +2,13 @@
 x-service-defaults: &service-defaults # Common runtime settings for all services
   restart: unless-stopped
   env_file:
-    - .env
+    - path: .env
+      required: false
   environment:
     NODE_ENV: production
     DATABASE_PATH: /app/data/bank.db
     PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
-    PUPPETEER_ARGS: --no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage
+    PUPPETEER_ARGS: --no-sandbox,--disable-setuid-sandbox,--disable-gpu,--no-first-run,--no-zygote
   networks:
     - bank-network
   security_opt:
@@ -30,19 +31,22 @@ x-service-defaults: &service-defaults # Common runtime settings for all services
       max-file: '3'
 
 services:
-  # Scraper service - runs the bank scraping backend
+  # Scraper service - one-shot scraper, run via scripts/run-scrape.sh
+  # Credentials are passed via --env-file at runtime, never stored in compose.
   scraper:
     <<: *service-defaults
+    restart: "no"
     build:
       context: .
       dockerfile: Dockerfile
       target: scraper
     container_name: bank-scraper
     volumes:
-      - bank-data:/app/data # Persist scraped DB between container restarts
+      - bank-data:/app/data # Read-write so scraper can write DB
       - ./packages/scraper/logs:/app/packages/scraper/logs
-    # No command specified - container will exit after build
-    # Can be run on-demand with: docker-compose run scraper node dist/cli.js scrape
+    command: ["node", "dist/cli.js", "scrape"]
+    # Run on-demand with: scripts/run-scrape.sh
+    shm_size: '256mb'
     profiles:
       - tools
     # Override with more generous limits for scraper
@@ -58,15 +62,31 @@ services:
   # MCP Server - Model Context Protocol server
   mcp-server:
     <<: *service-defaults
+    # Override inherited env_file so no .env is ever loaded into the MCP server.
+    # Credentials must never reach this container; operational vars come from
+    # the environment: block below.
+    env_file: []
     build:
       context: .
       dockerfile: Dockerfile
       target: mcp-server
     container_name: bank-mcp-server
     volumes:
-      - bank-data:/app/data # Read-write access to DB for forced scraping
+      - bank-data:/app/data:ro # Read-only access to DB — MCP server must never write
     stdin_open: true
     tty: true
+    # Harden the container: read-only root filesystem, /tmp on tmpfs
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/packages/mcp-server/logs
+    # MCP server must have zero bank credential env vars.
+    # Only operational env vars are set here.
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/bank.db
+      LOG_LEVEL: info
+      DB_READONLY: "true"
     # MCP servers communicate via stdio, so we don't expose ports
     # The server will be accessed via docker exec or docker run commands
 

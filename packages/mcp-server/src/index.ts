@@ -5,16 +5,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import * as dotenv from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
-
 import { RecurringChargesHandler } from './handlers/financial-advisory/recurring-charges.handler.js';
 import {
   AccountHandler,
+  FreshnessHandler,
   MerchantAnalysisHandler,
   MetadataHandler,
-  RefreshHandler,
   StatusHandler,
   SummaryHandler,
   TransactionHandler,
@@ -32,7 +28,6 @@ import type {
   MerchantAnalysisArgs,
   MonthlyCreditSummaryArgs,
   RecurringChargesArgs,
-  RefreshProviderArgs,
   SearchTransactionsArgs,
   SpendingByMerchantArgs,
   SummaryArgs,
@@ -41,27 +36,13 @@ import type {
 } from './types.js';
 import { logger } from './utils/logger.js';
 
-// Load environment variables from a local .env file only if it exists. This
-// allows containerised deployments (where credentials are provided via real
-// environment variables or secrets) to start without requiring a file baked
-// into the image.
-const rootEnvPath = path.resolve(__dirname, '../../../.env');
-if (fs.existsSync(rootEnvPath)) {
-  dotenv.config({ path: rootEnvPath });
-} else {
-  // Fallback to default behaviour which only expands already-defined
-  // process.env values. This is a no-op if there is no .env file.
-  dotenv.config();
-}
-
 type ToolArgsSpec = {
   get_available_categories: AvailableCategoriesArgs;
   get_transactions: TransactionArgs;
   get_financial_summary: SummaryArgs;
   get_accounts: void;
   get_account_balance_history: BalanceHistoryArgs;
-  refresh_all_data: void;
-  refresh_service_data: RefreshProviderArgs;
+  get_data_freshness: void;
   get_scrape_status: void;
   get_metadata: void;
   get_monthly_credit_summary: MonthlyCreditSummaryArgs;
@@ -80,10 +61,11 @@ Transform raw financial data into actionable insights that help users make smart
 
 ## CRITICAL: Data Freshness Check
 **ALWAYS check data freshness at the start of EVERY conversation:**
-1. Call get_scrape_status first to check when data was last updated
-2. If data is older than 12 hours, immediately inform the user and suggest running refresh_all_data
-3. Example: "I notice your financial data was last updated [X hours] ago. For the most accurate insights, I recommend refreshing your data first. Would you like me to do that now?"
-4. Do NOT proceed with analysis on stale data without user acknowledgment
+1. Call get_data_freshness first to check when data was last successfully scraped
+2. If status is 'stale' or 'broken', immediately inform the user — data may be unreliable
+3. Example: "I notice your financial data was last updated [X hours] ago and is marked as stale. Results may not reflect recent transactions."
+4. Do NOT proceed with time-sensitive analysis on stale/broken data without surfacing a caveat to the user
+5. Data is refreshed externally via a cron job — you cannot trigger a refresh from within the assistant
 
 ## Key Capabilities & How to Use Them
 
@@ -113,9 +95,9 @@ Transform raw financial data into actionable insights that help users make smart
 ## Best Practices for Tool Usage
 
 1. **Always Start with Data Freshness**:
-   - ALWAYS call get_scrape_status as your FIRST action
-   - If data is >12 hours old, prompt user to refresh before any analysis
-   - Never analyze stale data without user consent
+   - ALWAYS call get_data_freshness as your FIRST action
+   - If status is 'stale' (>36h) or 'broken', caveat your analysis prominently
+   - Data cannot be refreshed from within the assistant — it is updated by a scheduled cron job
    - Use get_metadata for quick overview of available data range after confirming freshness
 
 2. **Smart Tool Selection**:
@@ -147,9 +129,9 @@ Transform raw financial data into actionable insights that help users make smart
 ## Example Interaction Patterns
 
 When user asks any financial question:
-1. ALWAYS check data freshness first with get_scrape_status
-2. If data >12 hours old, prompt for refresh before proceeding
-3. Only proceed with analysis after ensuring fresh data
+1. ALWAYS call get_data_freshness first
+2. If status is 'stale' or 'broken', caveat your response prominently before proceeding
+3. Proceed with analysis, including the freshness status in your summary
 
 When asked about burn rate:
 1. Check data freshness
@@ -180,8 +162,8 @@ class IsraeliBankMCPServer {
   private transactionHandler!: TransactionHandler;
   private summaryHandler!: SummaryHandler;
   private accountHandler!: AccountHandler;
-  private refreshHandler!: RefreshHandler;
   private statusHandler!: StatusHandler;
+  private freshnessHandler!: FreshnessHandler;
   private recurringChargesHandler!: RecurringChargesHandler;
   private merchantAnalysisHandler!: MerchantAnalysisHandler;
   private metadataHandler!: MetadataHandler;
@@ -215,8 +197,8 @@ class IsraeliBankMCPServer {
     this.transactionHandler = new TransactionHandler(this.scraperService);
     this.summaryHandler = new SummaryHandler(this.scraperService);
     this.accountHandler = new AccountHandler(this.scraperService);
-    this.refreshHandler = new RefreshHandler(this.scraperService);
     this.statusHandler = new StatusHandler(this.scraperService);
+    this.freshnessHandler = new FreshnessHandler(this.scraperService);
     this.categoryAnalysisHandler = new CategoryAnalysisHandler(
       this.scraperService
     );
@@ -264,10 +246,7 @@ class IsraeliBankMCPServer {
       get_account_balance_history: args =>
         this.accountHandler.getAccountBalanceHistory(args),
 
-      refresh_all_data: () => this.refreshHandler.refreshAllData(),
-
-      refresh_service_data: args =>
-        this.refreshHandler.refreshProviderData(args),
+      get_data_freshness: () => this.freshnessHandler.getDataFreshness(),
 
       get_scrape_status: () => this.statusHandler.getScrapeStatus(),
 

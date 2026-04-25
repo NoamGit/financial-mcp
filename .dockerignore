@@ -13,6 +13,7 @@ build/
 # Development files
 .git/
 .gitignore
+.env
 .env.local
 .env.development
 .env.test

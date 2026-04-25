@@ -307,6 +307,29 @@ export class BankDataRepository {
   }
 
   /**
+   * Get the completed_at timestamp of the most recent status='completed' scrape run.
+   * Used by freshness logic to distinguish 'never' (no success ever) from
+   * 'broken' (had a success before, but the most recent run failed).
+   */
+  getLastSuccessfulScrapeAt(): Date | null {
+    const stmt = this.db.prepare(`
+      SELECT completed_at
+      FROM scrape_runs
+      WHERE status = 'completed'
+      ORDER BY completed_at DESC
+      LIMIT 1
+    `);
+
+    const row = stmt.get() as Pick<ScrapeRunRow, 'completed_at'> | undefined;
+
+    if (!row || !row.completed_at) {
+      return null;
+    }
+
+    return new Date(row.completed_at);
+  }
+
+  /**
    * Check if we need to scrape (based on last successful run)
    */
   shouldScrape(hoursThreshold = 24): boolean {

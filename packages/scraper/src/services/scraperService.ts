@@ -175,17 +175,19 @@ export class ScraperService {
   }
 
   /**
-   * Force a fresh scrape of all providers regardless of last scrape time
+   * Force a fresh scrape of all providers regardless of last scrape time.
+   * A scrape_run record is written regardless of success or failure so that
+   * the freshness handler can always report an accurate status.
    */
   async forceScrape(): Promise<void> {
     const timer = createTimer();
     const operationId = `force-scrape-all-${Date.now()}`;
 
-    try {
-      logger.startOperation('force scraping multi-provider data', {
-        operationId,
-      });
+    logger.startOperation('force scraping multi-provider data', { operationId });
 
+    const runId = this.repository.startScrapeRun();
+
+    try {
       logger.info('Starting forced bank data scraping', { operationId });
       // Scrape data from all providers
       const scrapedData = await scrapeAllBankData();
@@ -197,8 +199,14 @@ export class ScraperService {
       });
 
       logger.info('Saving forced scrape data to database', { operationId });
-      // Save to database
+      // Save to database — saveScrapedData opens its own run record, so we
+      // complete the outer one we started above after the save succeeds.
       this.repository.saveScrapedData(scrapedData);
+
+      this.repository.completeScrapeRun(runId, true, undefined, {
+        transactions: scrapedData.transactions?.length || 0,
+        accounts: scrapedData.accounts?.length || 0,
+      });
 
       const duration = timer.elapsed();
       logger.endOperation('force scraping multi-provider data', duration, {
@@ -207,6 +215,14 @@ export class ScraperService {
         operationId,
       });
     } catch (error) {
+      // Record the failure so freshness logic can surface 'broken' status.
+      const msg = error instanceof Error ? error.message : String(error);
+      const safeMsg = msg.replace(/https?:\/\/\S+/g, '[URL]').substring(0, 500);
+      this.repository.completeScrapeRun(runId, false, safeMsg, {
+        transactions: 0,
+        accounts: 0,
+      });
+
       logger.errorOperation(
         'force scraping multi-provider data',
         error as Error,
@@ -564,6 +580,15 @@ export class ScraperService {
       isRunning: info?.isRunning,
     });
     return info;
+  }
+
+  /**
+   * Get the timestamp of the most recent successfully completed scrape.
+   * Returns null if no successful scrape has ever completed.
+   * Used by freshness logic to distinguish 'never' from 'broken'.
+   */
+  getLastSuccessfulScrapeAt(): Date | null {
+    return this.repository.getLastSuccessfulScrapeAt();
   }
 
   /**
