@@ -83,6 +83,75 @@ export abstract class BaseHandler {
   }
 
   /**
+   * Build a lightweight data_freshness block for embedding in tool responses.
+   * All data-returning tools include this so the LLM always sees staleness info.
+   * Uses two-pass logic: separate query for last completed run timestamp so that
+   * 'broken' is reachable even when the most recent run failed.
+   */
+  protected getFreshnessFooter(): {
+    data_freshness: {
+      as_of: string | null;
+      hours_since_last_success: number | null;
+      status: 'fresh' | 'stale' | 'broken' | 'never';
+    };
+  } {
+    const lastSuccessAt = this.scraperService.getLastSuccessfulScrapeAt();
+    const info = this.scraperService.getLastScrapeInfo();
+
+    const hoursSince =
+      lastSuccessAt != null
+        ? (Date.now() - lastSuccessAt.getTime()) / 3600000
+        : null;
+
+    const lastRunFailed = info?.status === 'failed' && !info?.isRunning;
+
+    let status: 'fresh' | 'stale' | 'broken' | 'never';
+    if (!lastSuccessAt && !info?.isRunning) {
+      status = 'never';
+    } else if (lastRunFailed) {
+      status = 'broken';
+    } else if (hoursSince !== null && hoursSince > 36) {
+      status = 'stale';
+    } else {
+      status = 'fresh';
+    }
+
+    return {
+      data_freshness: {
+        as_of: lastSuccessAt?.toISOString() ?? null,
+        hours_since_last_success:
+          hoursSince !== null ? Math.round(hoursSince * 10) / 10 : null,
+        status,
+      },
+    };
+  }
+
+  /**
+   * Safe wrapper around getFreshnessFooter().
+   * If the DB throws (e.g. unreachable), returns a neutral fallback so the
+   * tool response is not discarded entirely.
+   */
+  protected getFreshnessFooterSafe(): {
+    data_freshness: {
+      as_of: string | null;
+      hours_since_last_success: number | null;
+      status: 'fresh' | 'stale' | 'broken' | 'never';
+    };
+  } {
+    try {
+      return this.getFreshnessFooter();
+    } catch {
+      return {
+        data_freshness: {
+          as_of: null,
+          hours_since_last_success: null,
+          status: 'broken',
+        },
+      };
+    }
+  }
+
+  /**
    * Calculate the number of days between two dates
    */
   protected getDaysBetween(startDate?: Date, endDate?: Date): number {

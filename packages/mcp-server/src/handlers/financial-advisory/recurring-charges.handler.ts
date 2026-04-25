@@ -62,7 +62,18 @@ export class RecurringChargesHandler extends BaseHandler {
         });
 
       if (!processedTransactions || processedTransactions.length === 0) {
-        throw new Error('No transactions found for analysis');
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                { success: false, error: 'No transactions found for analysis', ...this.getFreshnessFooterSafe() },
+                null,
+                2
+              ),
+            },
+          ],
+        };
       }
 
       // Filter out income transactions (positive amounts and income keywords) AND internal transfers
@@ -178,7 +189,11 @@ export class RecurringChargesHandler extends BaseHandler {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2),
+            text: JSON.stringify(
+              { ...response, ...this.getFreshnessFooterSafe() },
+              null,
+              2
+            ),
           },
         ],
       };

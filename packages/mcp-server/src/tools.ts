@@ -1,4 +1,3 @@
-import { PROVIDER_CONFIG } from '@bank-assistant/scraper';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 export const TOOLS = [
@@ -95,30 +94,17 @@ export const TOOLS = [
       required: ['accountId'],
     },
   },
+  // refresh_all_data and refresh_service_data are intentionally removed:
+  // scraping requires bank credentials which must never exist in the MCP server
+  // process. Use scripts/run-scrape.sh (cron) to trigger scrapes instead.
   {
-    name: 'refresh_all_data',
+    name: 'get_data_freshness',
     description:
-      'Triggers a fresh scrape of all connected bank and credit card accounts to get the latest data. Use when user mentions recent transactions not appearing, or when get_scrape_status shows data is stale (>24 hours old). This ensures all subsequent analysis uses the most current information.',
+      'Returns how fresh the financial data is. Always call this before drawing time-sensitive conclusions. Returns status: fresh (< 36h since last successful scrape), stale (36h+), broken (last scrape failed), or never (no scrape yet). Use get_scrape_status for more detailed scrape run information.',
     inputSchema: {
       type: 'object',
       properties: {},
-    },
-  },
-  {
-    name: 'refresh_service_data',
-    description:
-      'Refreshes data from a specific financial provider when you need updated information from just one source. More efficient than refresh_all_data when dealing with single account issues.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        service: {
-          type: 'string',
-          description:
-            "The specific provider to refresh (e.g., 'leumi' for Bank Leumi, 'visaCal' for Visa Cal credit card, 'max' for Max credit card)",
-          enum: Object.keys(PROVIDER_CONFIG),
-        },
-      },
-      required: ['service'],
+      required: [],
     },
   },
   {

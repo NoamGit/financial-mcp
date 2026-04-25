@@ -32,13 +32,35 @@ export class MonthlyCreditSummaryHandler extends BaseHandler {
       });
 
       if (!transactions || transactions.length === 0) {
-        throw new Error('No transactions found for this period');
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                { success: false, error: 'No transactions found for this period', ...this.getFreshnessFooterSafe() },
+                null,
+                2
+              ),
+            },
+          ],
+        };
       }
 
       // Get all accounts to identify credit cards
       const accounts = await this.scraperService.getAccounts();
       if (!accounts || accounts.length === 0) {
-        throw new Error('No accounts found');
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                { success: false, error: 'No accounts found', ...this.getFreshnessFooterSafe() },
+                null,
+                2
+              ),
+            },
+          ],
+        };
       }
 
       // Filter for credit card accounts (non-leumi accounts are credit cards)
@@ -153,7 +175,11 @@ export class MonthlyCreditSummaryHandler extends BaseHandler {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2),
+            text: JSON.stringify(
+              { ...response, ...this.getFreshnessFooterSafe() },
+              null,
+              2
+            ),
           },
         ],
       };
