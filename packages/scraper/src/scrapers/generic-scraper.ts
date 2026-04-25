@@ -101,9 +101,13 @@ export class GenericScraper implements BaseScraper {
       verbose: false, // Disable verbose logging to reduce log noise
       args: chromeArgs,
       navigationRetryCount: 3,
-      additionalTransactionInformation: true,
-      // Add protocol timeout to prevent hanging
-      timeout: 60000, // 60 seconds page timeout
+      // Isracard/Amex block automated requests to the per-transaction detail
+      // endpoint (PirteyIska_204) with 429 "Block Automation". Default false
+      // until the library ships a proper WAF bypass. Set
+      // SCRAPER_ADDITIONAL_TX_INFO=true to re-enable once fixed upstream.
+      additionalTransactionInformation:
+        process.env.SCRAPER_ADDITIONAL_TX_INFO === 'true',
+      timeout: 60000,
     };
   }
 
