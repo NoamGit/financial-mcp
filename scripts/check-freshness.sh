@@ -1,35 +1,44 @@
 #!/usr/bin/env bash
 # check-freshness.sh — Hourly heartbeat cron job.
-# Alerts via ntfy if no successful scrape has occurred in the last THRESHOLD_HOURS.
+# Alerts via Telegram if no successful scrape has occurred in the last THRESHOLD_HOURS.
 # Catches the "cron never ran" silent failure mode.
 #
 # Add to crontab:
-#   0 * * * * NTFY_TOPIC=mytopic /path/to/scripts/check-freshness.sh >> /var/log/scraper-heartbeat.log 2>&1
+#   0 * * * * TG_BOT_TOKEN=<token> TG_CHAT_ID=<chat_id> /path/to/scripts/check-freshness.sh >> /var/log/scraper.log 2>&1
 #
 # Set DB_PATH to the host-accessible path of the SQLite database.
 # For Docker named volume: /var/lib/docker/volumes/financial-mcp_bank-data/_data/bank.db
-# Or use a bind mount path if configured.
 set -euo pipefail
 
-NTFY_TOPIC="${NTFY_TOPIC:-}"
+TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+TG_CHAT_ID="${TG_CHAT_ID:-}"
 THRESHOLD_HOURS="${THRESHOLD_HOURS:-30}"
 DB_PATH="${DB_PATH:-/var/lib/docker/volumes/financial-mcp_bank-data/_data/bank.db}"
 
-if [ -z "$NTFY_TOPIC" ]; then
-  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARN: NTFY_TOPIC not set — staleness alerting disabled"
+notify() {
+  local message="$1"
+  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+    curl -s -o /dev/null -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+      -d "chat_id=${TG_CHAT_ID}&text=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$message")" || true
+  fi
+}
+
+if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARN: TG_BOT_TOKEN or TG_CHAT_ID not set — staleness alerting disabled"
   exit 0
 fi
 
-# Query the last successful scrape timestamp directly from the host-accessible DB.
-# sqlite3 must be installed on the host (not inside a container).
-LAST_SUCCESS=$(sqlite3 "${DB_PATH}" \
-  "SELECT completed_at FROM scrape_runs WHERE status='completed' ORDER BY completed_at DESC LIMIT 1;" \
+# Query the last successful scrape timestamp via sqlite3 in a Docker container
+# (avoids requiring sqlite3 on the host).
+LAST_SUCCESS=$(docker run --rm \
+  -v financial-mcp_bank-data:/data:ro \
+  alpine sh -c "apk add --quiet sqlite 2>/dev/null && sqlite3 /data/bank.db \"SELECT completed_at FROM scrape_runs WHERE status='completed' ORDER BY completed_at DESC LIMIT 1;\"" \
   2>/dev/null || echo "")
 
 if [ -z "$LAST_SUCCESS" ]; then
-  MSG="bank-scraper: No successful scrape found in DB! Data may be stale or DB unreachable. Check ${DB_PATH}"
+  MSG="🚨 bank-scraper: No successful scrape found in DB! Data may be stale or DB unreachable."
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] ALERT: $MSG"
-  curl -s -d "$MSG" "https://ntfy.sh/$NTFY_TOPIC" > /dev/null || true
+  notify "$MSG"
   exit 0
 fi
 
@@ -55,13 +64,13 @@ PYEOF
 )
 
 if [ "$IS_STALE" = "yes" ]; then
-  MSG="bank-scraper: Last success was $LAST_SUCCESS — over ${THRESHOLD_HOURS}h ago. Data is STALE. Run scripts/run-scrape.sh to refresh."
+  MSG="⚠️ bank-scraper: Last success was $LAST_SUCCESS — over ${THRESHOLD_HOURS}h ago. Data is STALE. Run scripts/run-scrape.sh to refresh."
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] ALERT: $MSG"
-  curl -s -d "$MSG" "https://ntfy.sh/$NTFY_TOPIC" > /dev/null || true
+  notify "$MSG"
 elif [ "$IS_STALE" = "no" ]; then
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] INFO: Last successful scrape at $LAST_SUCCESS — within ${THRESHOLD_HOURS}h threshold, OK"
 else
-  MSG="bank-scraper: staleness check could not be determined (result: $IS_STALE). Treating as stale — check ${DB_PATH} manually."
+  MSG="🚨 bank-scraper: staleness check could not be determined (result: $IS_STALE). Treating as stale — check DB manually."
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] ALERT: $MSG"
-  [ -n "$NTFY_TOPIC" ] && curl -s -d "$MSG" "https://ntfy.sh/$NTFY_TOPIC" > /dev/null 2>&1 || true
+  notify "$MSG"
 fi
