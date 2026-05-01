@@ -73,8 +73,6 @@ services:
     container_name: bank-mcp-server
     volumes:
       - bank-data:/app/data:ro # Read-only access to DB — MCP server must never write
-    stdin_open: true
-    tty: true
     # Harden the container: read-only root filesystem, /tmp on tmpfs
     read_only: true
     tmpfs:
@@ -87,13 +85,20 @@ services:
       DATABASE_PATH: /app/data/bank.db
       LOG_LEVEL: info
       DB_READONLY: "true"
-    # MCP servers communicate via stdio, so we don't expose ports
-    # The server will be accessed via docker exec or docker run commands
+      MCP_HTTP_PORT: "3000"
+    # Join both the private bank-network and the onecli_onecli network so
+    # nanoclaw agent containers (also on onecli_onecli) can reach the MCP server
+    # at http://bank-mcp-server:3000 without the squid proxy in the path.
+    networks:
+      - bank-network
+      - onecli_onecli
 
 networks:
   bank-network:
     driver: bridge
     name: bank-assistant-network
+  onecli_onecli:
+    external: true
 
 volumes:
   bank-data:

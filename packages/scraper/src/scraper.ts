@@ -5,7 +5,7 @@ import {
   loadProviderCredentials,
 } from './utils/credentials';
 import { logger } from './utils/logger';
-import type { ProviderKey } from './utils/providers';
+import { getCompanyType, type ProviderKey } from './utils/providers';
 
 // Timeout for individual provider scrape operations (in minutes)
 const PROVIDER_SCRAPE_TIMEOUT_MINUTES = 10;
@@ -63,9 +63,25 @@ export async function scrapeAllBankData(): Promise<ScrapedAccountData> {
     const allRawData: ScrapedAccountData['rawData'] = [];
     const errors: { provider: string; error: unknown }[] = [];
 
+    // Delay between same-company scrapers (e.g. isracard + isracard2) to avoid
+    // WAF rate-limiting: Isracard blocks a second automated session from the
+    // same IP when it follows immediately after the first.
+    const SAME_COMPANY_DELAY_MS =
+      parseInt(process.env.SAME_COMPANY_DELAY_MS || '90000', 10);
+    let prevCompanyType: string | null = null;
+
     // Run scrapers sequentially to avoid resource contention
     for (const provider of providers) {
       try {
+        const currentCompanyType = String(getCompanyType(provider));
+        if (prevCompanyType !== null && currentCompanyType === prevCompanyType) {
+          logger.info(
+            `Same company type as previous provider — waiting ${SAME_COMPANY_DELAY_MS / 1000}s before scraping ${provider}`
+          );
+          await new Promise(resolve => setTimeout(resolve, SAME_COMPANY_DELAY_MS));
+        }
+        prevCompanyType = currentCompanyType;
+
         logger.info(`Starting scrape for ${provider}...`);
         const scraper = createScraperInstance(provider, credentials);
 

@@ -1,6 +1,9 @@
+import http from 'http';
+import { randomUUID } from 'crypto';
 import { ScraperService } from '@bank-assistant/scraper';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -326,9 +329,167 @@ class IsraeliBankMCPServer {
   }
 
   async start() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    logger.info('Israeli Bank MCP Server started');
+    const httpPort = process.env.MCP_HTTP_PORT
+      ? parseInt(process.env.MCP_HTTP_PORT, 10)
+      : null;
+
+    if (httpPort) {
+      await this.startHttpServer(httpPort);
+    } else {
+      const transport = new StdioServerTransport();
+      await this.server.connect(transport);
+      logger.info('Israeli Bank MCP Server started (stdio)');
+    }
+  }
+
+  private async startHttpServer(port: number) {
+    // Stateless mode: each session gets its own transport + server pair.
+    // Sessions are keyed by Mcp-Session-Id header so the MCP client can
+    // resume tool calls within the same agent invocation.
+    const sessions = new Map<
+      string,
+      { transport: StreamableHTTPServerTransport; server: Server }
+    >();
+
+    const createSession = async () => {
+      const sessionServer = new Server(
+        {
+          name: 'israeli-bank-assistant',
+          version: '0.0.1',
+          instructions: INSTRUCTIONS,
+        },
+        {
+          capabilities: { tools: {}, prompts: { listChanged: true } },
+        }
+      );
+      const sessionTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: sid => {
+          sessions.set(sid, { transport: sessionTransport, server: sessionServer });
+        },
+      });
+      sessionTransport.onclose = () => {
+        if (sessionTransport.sessionId) sessions.delete(sessionTransport.sessionId);
+      };
+      this.attachHandlers(sessionServer);
+      await sessionServer.connect(sessionTransport);
+      return sessionTransport;
+    };
+
+    const httpServer = http.createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req as AsyncIterable<Buffer>) {
+          chunks.push(chunk);
+        }
+        const rawBody = Buffer.concat(chunks).toString();
+        let body: unknown;
+        try {
+          body = rawBody ? JSON.parse(rawBody) : undefined;
+        } catch {
+          body = undefined;
+        }
+
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        if (sessionId && sessions.has(sessionId)) {
+          const { transport } = sessions.get(sessionId)!;
+          await transport.handleRequest(req, res, body);
+        } else {
+          const transport = await createSession();
+          await transport.handleRequest(req, res, body);
+        }
+      } catch (err) {
+        logger.error('HTTP request error', { err });
+        if (!res.headersSent) {
+          res.writeHead(500).end('Internal server error');
+        }
+      }
+    });
+
+    await new Promise<void>(resolve => httpServer.listen(port, resolve));
+    logger.info(`Israeli Bank MCP Server started (HTTP port ${port})`);
+  }
+
+  private attachHandlers(server: Server) {
+    const scraperService = this.scraperService;
+    const transactionHandler = new TransactionHandler(scraperService);
+    const summaryHandler = new SummaryHandler(scraperService);
+    const accountHandler = new AccountHandler(scraperService);
+    const statusHandler = new StatusHandler(scraperService);
+    const freshnessHandler = new FreshnessHandler(scraperService);
+    const categoryAnalysisHandler = new CategoryAnalysisHandler(scraperService);
+    const recurringChargesHandler = new RecurringChargesHandler(scraperService);
+    const merchantAnalysisHandler = new MerchantAnalysisHandler(scraperService);
+    const metadataHandler = new MetadataHandler(scraperService);
+    const dayOfWeekAnalysisHandler = new DayOfWeekAnalysisHandler(scraperService);
+    const monthlyCreditSummaryHandler = new MonthlyCreditSummaryHandler(scraperService);
+
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+    const toolHandlers: ToolHandlers = {
+      get_available_categories: args =>
+        categoryAnalysisHandler.getAvailableCategories({
+          startDate: args.startDate ? new Date(args.startDate) : undefined,
+          endDate: args.endDate ? new Date(args.endDate) : undefined,
+          accountId: args.accountId,
+        }),
+      get_transactions: args => transactionHandler.getTransactions(args),
+      get_financial_summary: args => summaryHandler.getFinancialSummary(args),
+      get_accounts: () => accountHandler.getAccounts(),
+      get_account_balance_history: args => accountHandler.getAccountBalanceHistory(args),
+      get_data_freshness: () => freshnessHandler.getDataFreshness(),
+      get_scrape_status: () => statusHandler.getScrapeStatus(),
+      get_metadata: () => metadataHandler.getMetadata(),
+      get_monthly_credit_summary: args =>
+        monthlyCreditSummaryHandler.getMonthlyCreditSummary(args),
+      get_recurring_charges: args => recurringChargesHandler.getRecurringCharges(args),
+      analyze_merchant_spending: args =>
+        merchantAnalysisHandler.analyzeMerchantSpending(args),
+      get_spending_by_merchant: args =>
+        merchantAnalysisHandler.getSpendingByMerchant(args),
+      get_category_comparison: args =>
+        categoryAnalysisHandler.getCategoryComparison(args),
+      search_transactions: args =>
+        categoryAnalysisHandler.searchTransactions(args),
+      analyze_day_of_week_spending: args =>
+        dayOfWeekAnalysisHandler.analyzeDayOfWeekSpending(args),
+    };
+
+    const executeTool = async <K extends keyof ToolHandlers>(name: K, rawArgs: unknown) => {
+      const handler = toolHandlers[name] as (args?: unknown) => Promise<unknown>;
+      return handler(rawArgs);
+    };
+
+    server.setRequestHandler(CallToolRequestSchema, async request => {
+      const { name, arguments: rawArgs } = request.params as {
+        name: keyof ToolArgsMap;
+        arguments?: unknown;
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await executeTool(name, rawArgs)) as any;
+      } catch (error) {
+        logger.error(`Tool ${name} failed`, {
+          error: error instanceof Error ? error.message : String(error),
+          args: rawArgs,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  success: false,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    });
   }
 
   async stop() {
